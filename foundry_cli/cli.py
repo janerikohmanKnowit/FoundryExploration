@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional
@@ -237,7 +238,10 @@ class FoundryExplorer:
 
 
 def _run_az(args: List[str]) -> str:
-    cmd = ["az", *args]
+    az_path = shutil.which("az")
+    if not az_path:
+        raise AzureCliError("Azure CLI ('az') is not installed or not on PATH.")
+    cmd = [az_path, *args]
     try:
         completed = subprocess.run(cmd, check=True, capture_output=True, text=True)
     except FileNotFoundError as exc:
