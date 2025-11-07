@@ -87,7 +87,9 @@ class FoundryExplorer:
                 id=id_,
                 name=item.get("name", ""),
                 location=item.get("location", ""),
-                kind=properties.get("workspaceType") or properties.get("kind"),
+                # Some API versions expose the workspace type on the root payload instead of inside
+                # properties, so fall back to the top-level "kind" value when needed.
+                kind=properties.get("workspaceType") or properties.get("kind") or item.get("kind"),
                 resource_group=self._extract_resource_group(id_),
                 raw=item,
             )
