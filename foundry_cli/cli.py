@@ -111,12 +111,24 @@ class FoundryExplorer:
         api_version: str = DEFAULT_PROJECTS_API_VERSION,
     ) -> List[FoundryProject]:
         """List Foundry projects that live under a hub workspace."""
-        resource_group = resource_group or self._get_workspace_resource_group(hub_name)
-        url = (
-            f"{AZURE_MGMT_BASE}/subscriptions/{self.subscription_id}/resourceGroups/{resource_group}/"
-            f"providers/Microsoft.MachineLearningServices/workspaces/{hub_name}/projects?api-version={api_version}"
+        hub_workspace = self.get_workspace(hub_name, resource_group=resource_group)
+        if not hub_workspace.is_hub:
+            raise ValueError(f"Workspace '{hub_name}' is not a Foundry hub.")
+        resolved_resource_group = (
+            hub_workspace.resource_group or resource_group or self._get_workspace_resource_group(hub_name)
         )
-        value = self._az_rest_paginated(url)
+
+        url = (
+            f"{AZURE_MGMT_BASE}/subscriptions/{self.subscription_id}/resourceGroups/{resolved_resource_group}/"
+            f"providers/Microsoft.MachineLearningServices/workspaces/{hub_workspace.name}/projects?api-version={api_version}"
+        )
+        try:
+            value = self._az_rest_paginated(url)
+        except AzureCliError as exc:
+            if self._projects_api_not_supported(str(exc)):
+                return self._projects_from_workspace_inventory(hub_workspace, resource_group)
+            raise
+
         projects: List[FoundryProject] = []
         for item in value:
             projects.append(
@@ -315,6 +327,60 @@ class FoundryExplorer:
                 ]
             inventory.append(entry)
         return inventory
+
+    @staticmethod
+    def _projects_api_not_supported(message: str) -> bool:
+        lowered = message.lower()
+        needles = (
+            "feature not supported",
+            "invalidresourcetype",
+            "noregisteredproviderfound",
+        )
+        return any(needle in lowered for needle in needles)
+
+    def _projects_from_workspace_inventory(
+        self, hub_workspace: Workspace, resource_group: Optional[str]
+    ) -> List[FoundryProject]:
+        """Derive Foundry projects from the standard workspace inventory when the projects API is unavailable."""
+
+        def collect(scope: Optional[str]) -> List[Workspace]:
+            projects = self.list_projects(resource_group=scope)
+            hub_id = (hub_workspace.id or "").lower()
+            return [
+                project
+                for project in projects
+                if (project.raw.get("properties", {}).get("hubResourceId") or "").lower() == hub_id
+            ]
+
+        matches: List[Workspace] = []
+        if resource_group:
+            matches = collect(resource_group)
+        if not matches:
+            matches = collect(None)
+
+        if not matches:
+            associated_ids = {
+                (rid or "").lower()
+                for rid in hub_workspace.raw.get("properties", {}).get("associatedWorkspaces") or []
+            }
+            if associated_ids:
+                project_index = {ws.id.lower(): ws for ws in self.list_projects()}
+                matches = [
+                    project_index[resource_id]
+                    for resource_id in associated_ids
+                    if resource_id in project_index
+                ]
+
+        return [
+            FoundryProject(
+                id=project.id,
+                name=project.name,
+                location=project.location,
+                properties=project.raw.get("properties", {}),
+                raw=project.raw,
+            )
+            for project in matches
+        ]
 
 
 def _run_az(args: List[str]) -> str:
