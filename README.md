@@ -59,6 +59,14 @@ When running with table output, hubs without projects are summarized after the t
 
 Use `--projects-api-version` if you need to pin a specific preview or GA version of the Foundry projects API.
 
+### Summarize Foundry roots and projects
+
+```
+python -m foundry_cli.cli list-foundry-inventory [--resource-group <name>] [--roots-only] [--json]
+```
+
+This command produces a compact inventory that highlights the two Azure AI Foundry root types—**Foundry Hubs (v1)** and **Foundry Resources (v2)**—and the projects that live beneath them. Each root appears at least once with a placeholder (`-`) in the project column so you can quickly distinguish the container rows from project entries. Use `--roots-only` when you only need the containers without enumerating the child projects. `--projects-api-version` controls the API version used to enumerate projects for both hub and resource roots.
+
 ### List everything
 
 ```

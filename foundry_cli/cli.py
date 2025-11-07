@@ -157,6 +157,25 @@ class FoundryExplorer:
         headers = ("Hub", "Name", "Display Name", "Location", "Resource ID")
         return _format_table(headers, rows)
 
+    def format_foundry_inventory_table(
+        self,
+        inventory: Iterable[dict],
+        include_projects: bool = True,
+        project_placeholder: str = "-",
+    ) -> str:
+        rows: List[tuple] = []
+        for entry in inventory:
+            foundry_name = entry.get("foundry_name", "")
+            foundry_type = entry.get("foundry_type", "")
+            rows.append((foundry_name, foundry_type, project_placeholder))
+            if include_projects:
+                for project in entry.get("projects", []):
+                    rows.append((foundry_name, foundry_type, project.get("name", "")))
+        if not rows:
+            return "(none)"
+        headers = ("Foundry Name", "Foundry Type", "Project Name")
+        return _format_table(headers, rows)
+
     def format_workspace_details(self, workspace: Workspace) -> str:
         properties = workspace.raw.get("properties", {})
         tags = workspace.raw.get("tags") or {}
@@ -236,6 +255,65 @@ class FoundryExplorer:
                 next_url = f"{AZURE_MGMT_BASE}{next_url}"
         return items
 
+    def _classify_foundry_root(self, workspace: Workspace) -> Optional[str]:
+        properties = workspace.raw.get("properties", {})
+        kind = (workspace.kind or "").lower()
+        workspace_type = (properties.get("workspaceType") or "").lower()
+
+        if kind == "project" or workspace_type == "project":
+            return None
+        if kind == "hub" or workspace_type == "hub":
+            return "Foundry Hub"
+        if "foundry" in workspace_type:
+            return "Foundry Resource"
+        if workspace_type in {"workspace", "managed"}:
+            return "Foundry Resource"
+        if kind and kind not in {"project"}:
+            return "Foundry Resource"
+        if workspace_type:
+            return "Foundry Resource"
+        return None
+
+    def build_foundry_inventory(
+        self,
+        resource_group: Optional[str] = None,
+        include_projects: bool = True,
+        projects_api_version: str = DEFAULT_PROJECTS_API_VERSION,
+    ) -> List[dict]:
+        workspaces = self.list_workspaces(resource_group=resource_group)
+        inventory: List[dict] = []
+        for workspace in sorted(workspaces, key=lambda ws: ws.name.lower()):
+            foundry_type = self._classify_foundry_root(workspace)
+            if not foundry_type:
+                continue
+            entry = {
+                "foundry_name": workspace.name,
+                "foundry_type": foundry_type,
+                "resource_group": workspace.resource_group,
+                "location": workspace.location,
+                "resource_id": workspace.id,
+                "projects": [],
+            }
+            if include_projects:
+                projects = self.list_foundry_projects(
+                    workspace.name,
+                    resource_group=workspace.resource_group,
+                    api_version=projects_api_version,
+                )
+                entry["projects"] = [
+                    {
+                        "name": project.name,
+                        "display_name": project.properties.get("friendlyName")
+                        or project.properties.get("displayName")
+                        or "",
+                        "location": project.location,
+                        "resource_id": project.id,
+                    }
+                    for project in projects
+                ]
+            inventory.append(entry)
+        return inventory
+
 
 def _run_az(args: List[str]) -> str:
     az_path = shutil.which("az")
@@ -302,6 +380,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     all_parser.add_argument("--json", action="store_true", help="Emit raw JSON instead of a table.")
     all_parser.add_argument("--resource-group", help="Limit results to a specific resource group.")
+
+    inventory_parser = subparsers.add_parser(
+        "list-foundry-inventory",
+        help="List Foundry root objects (hubs and resources) and optionally their projects.",
+    )
+    inventory_parser.add_argument("--resource-group", help="Limit results to a specific resource group.")
+    inventory_parser.add_argument(
+        "--projects-api-version",
+        default=DEFAULT_PROJECTS_API_VERSION,
+        help="API version for the Foundry projects management API.",
+    )
+    inventory_parser.add_argument("--json", action="store_true", help="Emit raw JSON instead of a table.")
+    inventory_parser.add_argument(
+        "--roots-only",
+        action="store_true",
+        help="Only list the root objects without enumerating their projects.",
+    )
 
     show_parser = subparsers.add_parser("show-workspace", help="Show details for a single workspace by name.")
     show_parser.add_argument("name", help="Workspace name.")
@@ -382,6 +477,23 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(explorer.format_workspaces_table(hubs) if hubs else "(none)")
             print("\nProject Workspaces:")
             print(explorer.format_workspaces_table(projects) if projects else "(none)")
+        return 0
+
+    if args.command == "list-foundry-inventory":
+        include_projects = not args.roots_only
+        inventory = explorer.build_foundry_inventory(
+            resource_group=args.resource_group,
+            include_projects=include_projects,
+            projects_api_version=args.projects_api_version,
+        )
+        if args.json:
+            print(json.dumps(inventory, indent=2))
+        else:
+            print(
+                explorer.format_foundry_inventory_table(
+                    inventory, include_projects=include_projects
+                )
+            )
         return 0
 
     if args.command == "show-workspace":
